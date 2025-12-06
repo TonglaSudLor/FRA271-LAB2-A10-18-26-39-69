@@ -1,0 +1,18 @@
+% โหลด dataset จาก workspace
+%New_Export = data;              % ตัวแปรหลักชื่อ data
+velocity = full_step{1}.Values.Data;  % ดึง timeseries ออกมา
+step = full_step{4}.Values.Data;
+% แปลงข้อมูลเป็น double และ flatten มิติ 1x1xN
+t = full_step{1}.Values.Time(:);
+y = double(squeeze(adc_ts));
+
+% สร้าง timeseries ใหม่ที่ Simulink ใช้ได้
+adc_clean = timeseries(y, t, 'Name', 'ADC_Clean');
+
+% plot ตรวจสอบ
+figure;
+plot(t, y, 'LineWidth', 1.5);
+xlabel('Time (s)');
+ylabel('ADC Value');
+title('ADC Cleaned from Dataset');
+grid on;

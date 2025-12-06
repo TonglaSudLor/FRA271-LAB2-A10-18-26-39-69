@@ -1,0 +1,107 @@
+% --- 1. เตรียมข้อมูล Lookup Table (Current -> Torque) ---
+% แกะข้อมูลจากรูปตาราง Excel ของคุณ
+% หมายเหตุ: ผมเลือกช่วงที่กระแสมีการเปลี่ยนแปลงสัมพันธ์กับทอร์ค (ช่วงล่างของตาราง)
+% และตัดค่าซ้ำที่ 4.6A ออกเพื่อให้ interp1 ทำงานได้ถูกต้อง
+
+lut_current = [2.0, 2.34, 2.56, 2.884, 3.13, 3.336, 3.594, 3.706, ...
+               3.927, 4.375, 4.475, 4.607];
+           
+lut_torque  = [0.0015, 0.015, 0.028, 0.03975, 0.05575, 0.068, 0.08, 0.094, ...
+               0.1065, 0.11925, 0.134, 0.1465];
+
+% --- 2. ตั้งค่าตัวแปรและกราฟ ---
+var_names = {'dc2100', 'dc2500', 'dc21000', 'dc23000'}; % รายชื่อชุดข้อมูล
+legend_labels = {'2100 Hz', '2500 Hz', '10000 Hz', '23000 Hz'}; 
+line_colors = lines(length(var_names));
+
+% สร้าง Figure 1: Velocity
+fig_vel = figure('Name', 'Velocity vs PWM', 'Color', 'w');
+ax_vel = axes(fig_vel); hold(ax_vel, 'on'); grid(ax_vel, 'on');
+xlabel(ax_vel, 'PWM Duty Cycle (%)'); ylabel(ax_vel, 'Velocity (RPM/Unit)');
+title(ax_vel, 'Velocity vs PWM Duty Cycle');
+
+% สร้าง Figure 2: Efficiency
+fig_eff = figure('Name', 'Efficiency vs PWM', 'Color', 'w');
+ax_eff = axes(fig_eff); hold(ax_eff, 'on'); grid(ax_eff, 'on');
+xlabel(ax_eff, 'PWM Duty Cycle (%)'); ylabel(ax_eff, 'Efficiency');
+title(ax_eff, 'Efficiency vs PWM Duty Cycle');
+
+% --- 3. วนลูปประมวลผลข้อมูล ---
+for i = 1:length(var_names)
+    try
+        % ดึงข้อมูลจาก Workspace
+        data = evalin('base', var_names{i});
+        
+        % 3.1 ดึงค่าดิบ
+        raw_current = double(squeeze(data{1}.Values.Data)); % กระแส
+        raw_duty    = double(squeeze(data{5}.Values.Data)); % PWM 0-65535
+        raw_vel     = double(squeeze(data{6}.Values.Data)); % ความเร็ว (Velocity)
+        
+        % 3.2 แปลงหน่วย
+        % Duty Cycle 0-100%
+        duty_percent = (raw_duty / 65535) * 100;
+        
+        % 3.3 เรียงลำดับข้อมูล (Sort) ตาม Duty Cycle (สำคัญสำหรับกราฟเส้น)
+        [duty_sorted, sort_idx] = sort(duty_percent);
+        current_sorted = raw_current(sort_idx);
+        vel_sorted     = raw_vel(sort_idx);
+        
+        % 3.4 กรองข้อมูลให้เนียน (Smooth) เพื่อลด Noise ก่อนคำนวณ
+        % ใช้ rlowess เหมือนเดิม เพราะเวิร์คสุด
+        current_smooth = smoothdata(current_sorted, 'rlowess', 300);
+        vel_smooth     = smoothdata(vel_sorted, 'rlowess', 300);
+        
+        % --- 4. คำนวณ Efficiency ---
+        % 4.1 หา Torque จาก Current โดยเทียบกับตาราง (Lookup)
+        % ใช้ 'linear' interpolation และ 'extrap' เผื่อค่ากระแสหลุดช่วง
+        t_load_calc = interp1(lut_current, lut_torque, current_smooth, 'linear', 'extrap');
+        
+        % 4.2 สูตร Efficiency
+        % สูตร: ((Vel/0.22254)*T^2 + Vel*T) / (12 * Duty_Ratio * Current)
+        
+        % แปลง Duty เป็นสัดส่วน 0-1 สำหรับสูตรกำลังไฟฟ้า (P = V*Duty*I)
+        % ถ้าไม่หาร 100 ค่า Eff จะต่ำผิดปกติ แต่ถ้าสูตรท่านระบุให้ใช้ % ตรงๆ ก็แก้ตรงนี้ได้
+        duty_ratio_calc = duty_sorted / 100; 
+        
+        % ป้องกันการหารด้วย 0 (ช่วง Duty=0 หรือ Current=0)
+        valid_mask = (duty_ratio_calc > 0.01) & (current_smooth > 0.01);
+        
+        eff_vals = zeros(size(duty_sorted));
+        
+        % ส่วนเศษ (Numerator)
+        num_term = (vel_smooth(valid_mask) ./ 0.22254) .* (t_load_calc(valid_mask).^2) ...
+                   + (vel_smooth(valid_mask) .* t_load_calc(valid_mask));
+        
+        % ส่วนส่วน (Denominator)
+        den_term = 12 .* duty_ratio_calc(valid_mask) .* current_smooth(valid_mask);
+        
+        eff_vals(valid_mask) = num_term ./ den_term;
+
+        % --- 5. พล็อตกราฟ ---
+        
+        % กราฟ 1: Velocity
+        plot(ax_vel, duty_sorted, vel_smooth, '-', 'LineWidth', 2, ...
+             'Color', line_colors(i,:), 'DisplayName', legend_labels{i});
+         
+        % กราฟ 2: Efficiency
+        plot(ax_eff, duty_sorted, eff_vals, '-', 'LineWidth', 2, ...
+             'Color', line_colors(i,:), 'DisplayName', legend_labels{i});
+             
+    catch ME
+        warning('ข้ามข้อมูลชุด %s: %s', var_names{i}, ME.message);
+    end
+end
+
+% --- 6. ตกแต่งกราฟ ---
+% ตกแต่งกราฟ Velocity
+figure(fig_vel);
+xlim(ax_vel, [0 100]);
+axis(ax_vel, 'tight'); ylim(ax_vel, [0, max(ylim(ax_vel))*1.1]);
+legend(ax_vel, 'show', 'Location', 'best');
+
+% ตกแต่งกราฟ Efficiency
+figure(fig_eff);
+xlim(ax_eff, [0 100]);
+% ตัดช่วงกราฟ Eff ที่อาจจะพุ่งสูงผิดปกติช่วงต้นๆ ทิ้งในการแสดงผล (Optional)
+ylim(ax_eff, [0, 1]); % สมมติว่า Eff ไม่เกิน 1 (100%)
+legend(ax_eff, 'show', 'Location', 'best');
